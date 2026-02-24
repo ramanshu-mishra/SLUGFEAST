@@ -65,6 +65,13 @@ contract SlugDexTest is Test {
     address public alice;
     address public bob;
 
+    // Private keys for signature generation
+    uint256 internal constant ALICE_PK = 0xA11CE;
+    uint256 internal constant BOB_PK = 0xB0B;
+
+    // Nonce counter (starts at 1 to avoid matching initial nonce_map of 0)
+    uint256 private _nonce = 1;
+
     uint256 constant SLUG_FEE = 100; // 1% fee (100/10000)
     uint256 constant INITIAL_TOKEN_SUPPLY = 800_000_000 * 1e6; // 800M tokens (6 decimals implied by contract)
     uint256 constant INITIAL_VETH = 4 ether;
@@ -74,7 +81,7 @@ contract SlugDexTest is Test {
     // ──────────────────────────────────────────────────────────────────────
     // Events (must match the contract declarations for expectEmit)
     // ──────────────────────────────────────────────────────────────────────
-    event TokenCreated(address indexed token);
+    event TokenCreated(address indexed token, string indexed id);
     event TokenBought(address indexed token, uint256 VETH, uint256 amount);
     event TokenSold(address indexed token, uint256 VETH, uint256 amount);
     event poolcreated(address indexed tokenA);
@@ -87,8 +94,10 @@ contract SlugDexTest is Test {
 
     function setUp() public {
         owner = address(this);
-        alice = makeAddr("alice");
-        bob = makeAddr("bob");
+        alice = vm.addr(ALICE_PK);
+        bob = vm.addr(BOB_PK);
+        vm.label(alice, "alice");
+        vm.label(bob, "bob");
 
         mockPoolManager = new MockPoolManager();
         mockPositionManager = new MockPositionManager();
@@ -104,32 +113,45 @@ contract SlugDexTest is Test {
     // Helpers
     // ──────────────────────────────────────────────────────────────────────
 
-    /// @dev Creates a token via the dex and returns its address
-    function _createToken() internal returns (address) {
-        dex.createToken("TestToken", "TT", "ipfs://metadata");
-        // Get the token address from the last event
-        // We know the token was deployed by dex, so we use vm to get it
-        // For simplicity, we'll use a direct approach
-        return _createTokenWithName("TestToken", "TT");
+    /// @dev Returns a unique nonce that won't collide with the contract's nonce_map counter
+    function _nextNonce() internal returns (uint256) {
+        return _nonce++;
     }
 
-    function _createTokenWithName(string memory name, string memory symbol) internal returns (address) {
-        // Record logs to capture the TokenCreated event
+    /// @dev Generates a valid EIP-191 signature for the verifySignature modifier
+    function _signCreateToken(uint256 privateKey, uint256 nonce) internal view returns (bytes memory) {
+        address signer = vm.addr(privateKey);
+        bytes32 messageHash = keccak256(abi.encodePacked(signer, nonce));
+        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", messageHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, ethSignedHash);
+        return abi.encodePacked(r, s, v);
+    }
+
+    /// @dev Creates a token via the dex as a specific signer and returns its address
+    function _createTokenAs(uint256 privateKey, string memory name, string memory symbol) internal returns (address) {
+        uint256 nonce = _nextNonce();
+        address signer = vm.addr(privateKey);
+        bytes memory signature = _signCreateToken(privateKey, nonce);
+
         vm.recordLogs();
-        dex.createToken(name, symbol, "ipfs://metadata");
+        vm.prank(signer);
+        dex.createToken(name, symbol, "ipfs://metadata", "test-id", nonce, signature);
         Vm.Log[] memory entries = vm.getRecordedLogs();
-        
-        // Find the TokenCreated event and extract the token address
+
         address tokenAddr;
         for (uint i = 0; i < entries.length; i++) {
-            // TokenCreated(address indexed token) has topic[0] = keccak256("TokenCreated(address)")
-            if (entries[i].topics[0] == keccak256("TokenCreated(address)")) {
+            if (entries[i].topics[0] == keccak256("TokenCreated(address,string)")) {
                 tokenAddr = address(uint160(uint256(entries[i].topics[1])));
                 break;
             }
         }
         require(tokenAddr != address(0), "Token not created");
         return tokenAddr;
+    }
+
+    /// @dev Creates a token via the dex (as alice by default) and returns its address
+    function _createTokenWithName(string memory name, string memory symbol) internal returns (address) {
+        return _createTokenAs(ALICE_PK, name, symbol);
     }
 
     /// @dev Calculates expected fee for a given ETH amount
@@ -234,13 +256,17 @@ contract SlugDexTest is Test {
     // ══════════════════════════════════════════════════════════════════════
 
     function test_createToken_emitsTokenCreated() public {
+        uint256 nonce = _nextNonce();
+        bytes memory signature = _signCreateToken(ALICE_PK, nonce);
+
         vm.recordLogs();
-        dex.createToken("MyToken", "MTK", "ipfs://test");
+        vm.prank(alice);
+        dex.createToken("MyToken", "MTK", "ipfs://test", "test-id", nonce, signature);
         Vm.Log[] memory entries = vm.getRecordedLogs();
 
         bool foundEvent = false;
         for (uint i = 0; i < entries.length; i++) {
-            if (entries[i].topics[0] == keccak256("TokenCreated(address)")) {
+            if (entries[i].topics[0] == keccak256("TokenCreated(address,string)")) {
                 foundEvent = true;
                 break;
             }
@@ -275,8 +301,7 @@ contract SlugDexTest is Test {
     }
 
     function test_createToken_anyoneCanCreate() public {
-        vm.prank(alice);
-        address token = _createTokenWithName("AliceToken", "AT");
+        address token = _createTokenAs(BOB_PK, "BobToken", "BT");
         assertTrue(token != address(0));
     }
 
@@ -298,21 +323,21 @@ contract SlugDexTest is Test {
         address fakeToken = makeAddr("fakeToken");
         vm.prank(alice);
         vm.expectRevert("SLUGFEAST : FORBIDDEN");
-        dex.buy{value: 1 ether}(fakeToken);
+        dex.buy{value: 1 ether}(fakeToken, _nextNonce());
     }
 
     function test_buy_revertsIfTooSmall() public {
         address token = _createTokenWithName("BuyToken", "BT");
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(ISlugDex.TooSmallTransaction.selector, token, uint256(100)));
-        dex.buy{value: 100}(token);
+        dex.buy{value: 100}(token, _nextNonce());
     }
 
     function test_buy_revertsWithZeroValue() public {
         address token = _createTokenWithName("BuyToken2", "BT2");
         vm.prank(alice);
         vm.expectRevert();
-        dex.buy{value: 0}(token);
+        dex.buy{value: 0}(token, _nextNonce());
     }
 
     function test_buy_normalPurchase() public {
@@ -323,7 +348,7 @@ contract SlugDexTest is Test {
         uint256 expectedTokens = _calcTokensOut(INITIAL_TOKEN_SUPPLY, INITIAL_VETH, ethAfterFee);
 
         vm.prank(alice);
-        dex.buy{value: buyAmount}(token);
+        dex.buy{value: buyAmount}(token, _nextNonce());
 
         uint256 aliceBalance = IERC20(token).balanceOf(alice);
         assertEq(aliceBalance, expectedTokens, "Alice should receive correct tokens");
@@ -337,7 +362,7 @@ contract SlugDexTest is Test {
         uint256 expectedTokens = _calcTokensOut(INITIAL_TOKEN_SUPPLY, INITIAL_VETH, ethAfterFee);
 
         vm.prank(alice);
-        dex.buy{value: buyAmount}(token);
+        dex.buy{value: buyAmount}(token, _nextNonce());
 
         uint256 newTokenReserves = dex.getTokenReserves(token);
         uint256 newVethReserves = dex.getVEthReserves(token);
@@ -356,7 +381,7 @@ contract SlugDexTest is Test {
         vm.prank(alice);
         vm.expectEmit(true, false, false, true);
         emit TokenBought(token, ethAfterFee + fee, expectedTokens);
-        dex.buy{value: buyAmount}(token);
+        dex.buy{value: buyAmount}(token, _nextNonce());
     }
 
     function test_buy_multipleBuysUpdateReserves() public {
@@ -365,7 +390,7 @@ contract SlugDexTest is Test {
         // First buy
         uint256 buyAmount1 = 0.5 ether;
         vm.prank(alice);
-        dex.buy{value: buyAmount1}(token);
+        dex.buy{value: buyAmount1}(token, _nextNonce());
 
         uint256 reservesAfter1 = dex.getTokenReserves(token);
         uint256 vethAfter1 = dex.getVEthReserves(token);
@@ -377,7 +402,7 @@ contract SlugDexTest is Test {
         uint256 expectedTokens2 = _calcTokensOut(reservesAfter1, vethAfter1, ethAfterFee2);
 
         vm.prank(bob);
-        dex.buy{value: buyAmount2}(token);
+        dex.buy{value: buyAmount2}(token, _nextNonce());
 
         uint256 bobBalance = IERC20(token).balanceOf(bob);
         assertEq(bobBalance, expectedTokens2, "Bob should receive correct tokens from second buy");
@@ -388,7 +413,7 @@ contract SlugDexTest is Test {
 
         vm.prank(alice);
         // 10000 wei should succeed (just at the threshold)
-        dex.buy{value: 10000}(token);
+        dex.buy{value: 10000}(token, _nextNonce());
 
         uint256 aliceBalance = IERC20(token).balanceOf(alice);
         assertTrue(aliceBalance > 0, "Alice should receive some tokens at minimum buy");
@@ -399,7 +424,7 @@ contract SlugDexTest is Test {
 
         // Buy with 100 ether - a very large purchase relative to 4 VETH initial
         vm.prank(alice);
-        dex.buy{value: 100 ether}(token);
+        dex.buy{value: 100 ether}(token, _nextNonce());
 
         uint256 aliceBalance = IERC20(token).balanceOf(alice);
         assertTrue(aliceBalance > 0, "Alice should receive tokens");
@@ -411,12 +436,12 @@ contract SlugDexTest is Test {
 
         // First buy — 1 ether
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
         // Second buy — same 1 ether by bob
         vm.prank(bob);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
         uint256 bobTokens = IERC20(token).balanceOf(bob);
 
         // Bob should get fewer tokens than Alice (price increased)
@@ -432,7 +457,7 @@ contract SlugDexTest is Test {
         address fakeToken = makeAddr("fakeTokenSell");
         vm.prank(alice);
         vm.expectRevert("SLUGFEAST : FORBIDDEN");
-        dex.sell(fakeToken, 1000);
+        dex.sell(fakeToken, 1000, _nextNonce());
     }
 
     function test_sell_revertsIfNoAllowance() public {
@@ -440,12 +465,12 @@ contract SlugDexTest is Test {
 
         // Buy some tokens first
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         // Try to sell without approval
         vm.prank(alice);
         vm.expectRevert("SLUGFEAST : FORBIDDEN");
-        dex.sell(token, 1000);
+        dex.sell(token, 1000, _nextNonce());
     }
 
     function test_sell_normalSell() public {
@@ -453,7 +478,7 @@ contract SlugDexTest is Test {
 
         // Buy tokens first
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
         uint256 sellAmount = aliceTokens / 2; // sell half
         assertTrue(sellAmount > 0, "Should have tokens to sell");
@@ -462,7 +487,7 @@ contract SlugDexTest is Test {
         uint256 aliceETHBefore = alice.balance;
         vm.startPrank(alice);
         IERC20(token).approve(address(dex), sellAmount);
-        dex.sell(token, sellAmount);
+        dex.sell(token, sellAmount, _nextNonce());
         vm.stopPrank();
 
         uint256 aliceTokensAfter = IERC20(token).balanceOf(alice);
@@ -477,7 +502,7 @@ contract SlugDexTest is Test {
 
         // Buy tokens first
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         uint256 reservesBefore = dex.getTokenReserves(token);
         uint256 vethBefore = dex.getVEthReserves(token);
@@ -487,7 +512,7 @@ contract SlugDexTest is Test {
 
         vm.startPrank(alice);
         IERC20(token).approve(address(dex), sellAmount);
-        dex.sell(token, sellAmount);
+        dex.sell(token, sellAmount, _nextNonce());
         vm.stopPrank();
 
         uint256 reservesAfter = dex.getTokenReserves(token);
@@ -501,7 +526,7 @@ contract SlugDexTest is Test {
         address token = _createTokenWithName("SellEmit", "SE");
 
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
         uint256 sellAmount = aliceTokens / 2;
@@ -515,7 +540,7 @@ contract SlugDexTest is Test {
         IERC20(token).approve(address(dex), sellAmount);
         vm.expectEmit(true, false, false, true);
         emit TokenSold(token, expectedVETH, sellAmount);
-        dex.sell(token, sellAmount);
+        dex.sell(token, sellAmount, _nextNonce());
         vm.stopPrank();
     }
 
@@ -523,13 +548,13 @@ contract SlugDexTest is Test {
         address token = _createTokenWithName("SellAll", "SA");
 
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
         vm.startPrank(alice);
         IERC20(token).approve(address(dex), aliceTokens);
-        dex.sell(token, aliceTokens);
+        dex.sell(token, aliceTokens, _nextNonce());
         vm.stopPrank();
 
         assertEq(IERC20(token).balanceOf(alice), 0, "Alice should have 0 tokens after selling all");
@@ -542,14 +567,14 @@ contract SlugDexTest is Test {
 
         // Buy
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
         // Sell all
         vm.startPrank(alice);
         IERC20(token).approve(address(dex), aliceTokens);
-        dex.sell(token, aliceTokens);
+        dex.sell(token, aliceTokens, _nextNonce());
         vm.stopPrank();
 
         uint256 aliceETHAfter = alice.balance;
@@ -562,7 +587,7 @@ contract SlugDexTest is Test {
         address token = _createTokenWithName("PartialSell", "PS");
 
         vm.prank(alice);
-        dex.buy{value: 2 ether}(token);
+        dex.buy{value: 2 ether}(token, _nextNonce());
 
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
         uint256 sellChunk = aliceTokens / 4;
@@ -573,7 +598,7 @@ contract SlugDexTest is Test {
         // Sell in 4 chunks
         for (uint i = 0; i < 4; i++) {
             uint256 tokensBefore = IERC20(token).balanceOf(alice);
-            dex.sell(token, sellChunk);
+            dex.sell(token, sellChunk, _nextNonce());
             uint256 tokensAfter = IERC20(token).balanceOf(alice);
             assertEq(tokensBefore - tokensAfter, sellChunk, "Each sell should transfer exact amount");
         }
@@ -592,7 +617,7 @@ contract SlugDexTest is Test {
         uint256 kBefore = dex.getTokenReserves(token) * dex.getVEthReserves(token);
 
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         uint256 kAfter = dex.getTokenReserves(token) * dex.getVEthReserves(token);
 
@@ -606,7 +631,7 @@ contract SlugDexTest is Test {
 
         // Buy first
         vm.prank(alice);
-        dex.buy{value: 2 ether}(token);
+        dex.buy{value: 2 ether}(token, _nextNonce());
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
         // Check quote before sell
@@ -615,7 +640,7 @@ contract SlugDexTest is Test {
         // Sell some tokens (price should decrease — more tokens in pool, less VETH)
         vm.startPrank(alice);
         IERC20(token).approve(address(dex), aliceTokens / 2);
-        dex.sell(token, aliceTokens / 2);
+        dex.sell(token, aliceTokens / 2, _nextNonce());
         vm.stopPrank();
 
         uint256 quoteAfter = dex.getETHQuote(token);
@@ -647,7 +672,7 @@ contract SlugDexTest is Test {
         address token = _createTokenWithName("QuoteTAfter", "QTA");
 
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         uint256 quote = dex.getTokenQuote(token);
         // After buying, VETH increased, so K/VETH decreased
@@ -658,7 +683,7 @@ contract SlugDexTest is Test {
         address token = _createTokenWithName("QuoteEAfter", "QEA");
 
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         uint256 quote = dex.getETHQuote(token);
         // After buying, tokenSupply decreased, so K/tokenSupply increased
@@ -724,7 +749,7 @@ contract SlugDexTest is Test {
         vm.deal(alice, graduationETH);
 
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
 
         assertTrue(dex.isGraduated(token), "Token should be graduated");
     }
@@ -737,7 +762,7 @@ contract SlugDexTest is Test {
 
         vm.recordLogs();
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
 
         Vm.Log[] memory entries = vm.getRecordedLogs();
 
@@ -762,7 +787,7 @@ contract SlugDexTest is Test {
         vm.deal(alice, graduationETH);
 
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
 
         assertTrue(dex.isGraduated(token), "Token should be marked as graduated");
     }
@@ -782,7 +807,7 @@ contract SlugDexTest is Test {
         uint256 aliceBefore = alice.balance;
 
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
 
         uint256 aliceAfter = alice.balance;
 
@@ -797,7 +822,7 @@ contract SlugDexTest is Test {
         vm.deal(alice, graduationETH);
 
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
 
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
         // Alice should have received all the remaining tokens from the pool
@@ -812,7 +837,7 @@ contract SlugDexTest is Test {
         vm.deal(alice, graduationETH);
 
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
 
         // The mock position manager should have been called
         assertTrue(mockPositionManager.callCount() > 0, "PositionManager should be called");
@@ -826,7 +851,7 @@ contract SlugDexTest is Test {
         vm.deal(alice, graduationETH);
 
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
 
         assertEq(dex.getLockedTokens(token), 0, "Locked tokens should be cleared after graduation");
     }
@@ -843,13 +868,13 @@ contract SlugDexTest is Test {
         uint256 graduationETH = K * 2;
         vm.deal(alice, graduationETH);
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
         assertTrue(dex.isGraduated(token));
 
         // Try to buy again — should revert
         vm.prank(bob);
         vm.expectRevert("SLUGFEAST: Token already graduated");
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
     }
 
     function test_graduated_sellReverts() public {
@@ -857,21 +882,21 @@ contract SlugDexTest is Test {
 
         // Buy some tokens before graduation
         vm.prank(alice);
-        dex.buy{value: 0.5 ether}(token);
+        dex.buy{value: 0.5 ether}(token, _nextNonce());
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
         // Graduate the token with a big buy
         uint256 graduationETH = K * 2;
         vm.deal(bob, graduationETH);
         vm.prank(bob);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
         assertTrue(dex.isGraduated(token));
 
         // Try to sell — should revert
         vm.startPrank(alice);
         IERC20(token).approve(address(dex), aliceTokens);
         vm.expectRevert("SLUGFEAST: Token already graduated");
-        dex.sell(token, aliceTokens);
+        dex.sell(token, aliceTokens, _nextNonce());
         vm.stopPrank();
     }
 
@@ -881,7 +906,7 @@ contract SlugDexTest is Test {
         uint256 graduationETH = K * 2;
         vm.deal(alice, graduationETH);
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
 
         vm.expectRevert("SLUGFEAST: Token already graduated");
         dex.getTokenQuote(token);
@@ -893,7 +918,7 @@ contract SlugDexTest is Test {
         uint256 graduationETH = K * 2;
         vm.deal(alice, graduationETH);
         vm.prank(alice);
-        dex.buy{value: graduationETH}(token);
+        dex.buy{value: graduationETH}(token, _nextNonce());
 
         vm.expectRevert("SLUGFEAST: Token already graduated");
         dex.getETHQuote(token);
@@ -908,7 +933,7 @@ contract SlugDexTest is Test {
         address token = _createTokenWithName("FeeBuy", "FB");
 
         vm.prank(alice);
-        dex.buy{value: 10 ether}(token);
+        dex.buy{value: 10 ether}(token, _nextNonce());
 
         // The contract should hold the fee
         uint256 dexBalance = address(dex).balance;
@@ -919,14 +944,14 @@ contract SlugDexTest is Test {
         address token = _createTokenWithName("FeeSell", "FS");
 
         vm.prank(alice);
-        dex.buy{value: 2 ether}(token);
+        dex.buy{value: 2 ether}(token, _nextNonce());
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
         uint256 dexBalanceBefore = address(dex).balance;
 
         vm.startPrank(alice);
         IERC20(token).approve(address(dex), aliceTokens);
-        dex.sell(token, aliceTokens);
+        dex.sell(token, aliceTokens, _nextNonce());
         vm.stopPrank();
 
         // DEX balance should still hold some ETH as fee
@@ -944,7 +969,7 @@ contract SlugDexTest is Test {
         uint256 aliceBalBefore = alice.balance;
 
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
@@ -964,11 +989,11 @@ contract SlugDexTest is Test {
 
         // Alice buys token1
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token1);
+        dex.buy{value: 1 ether}(token1, _nextNonce());
 
         // Bob buys token2
         vm.prank(bob);
-        dex.buy{value: 1 ether}(token2);
+        dex.buy{value: 1 ether}(token2, _nextNonce());
 
         // Pools should be independent
         uint256 t1Reserves = dex.getTokenReserves(token1);
@@ -983,12 +1008,12 @@ contract SlugDexTest is Test {
 
         // Alice buys
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
         // Bob buys same amount
         vm.prank(bob);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
         uint256 bobTokens = IERC20(token).balanceOf(bob);
 
         // Bob should get fewer tokens (bonding curve)
@@ -1000,7 +1025,7 @@ contract SlugDexTest is Test {
 
         // Alice buys 2 ether worth
         vm.prank(alice);
-        dex.buy{value: 2 ether}(token);
+        dex.buy{value: 2 ether}(token, _nextNonce());
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
         // Alice transfers half to bob
@@ -1011,7 +1036,7 @@ contract SlugDexTest is Test {
         uint256 bobETHBefore = bob.balance;
         vm.startPrank(bob);
         IERC20(token).approve(address(dex), aliceTokens / 2);
-        dex.sell(token, aliceTokens / 2);
+        dex.sell(token, aliceTokens / 2, _nextNonce());
         vm.stopPrank();
 
         assertTrue(bob.balance > bobETHBefore, "Bob should receive ETH from selling");
@@ -1084,7 +1109,7 @@ contract SlugDexTest is Test {
         address token = _createTokenWithName("FuzzBuy", "FZB");
 
         vm.prank(alice);
-        dex.buy{value: buyAmount}(token);
+        dex.buy{value: buyAmount}(token, _nextNonce());
 
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
         assertTrue(aliceTokens > 0, "Should always receive tokens for valid buy");
@@ -1098,13 +1123,13 @@ contract SlugDexTest is Test {
         uint256 aliceETHBefore = alice.balance;
 
         vm.prank(alice);
-        dex.buy{value: buyAmount}(token);
+        dex.buy{value: buyAmount}(token, _nextNonce());
 
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
 
         vm.startPrank(alice);
         IERC20(token).approve(address(dex), aliceTokens);
-        dex.sell(token, aliceTokens);
+        dex.sell(token, aliceTokens, _nextNonce());
         vm.stopPrank();
 
         uint256 aliceETHAfter = alice.balance;
@@ -1123,7 +1148,7 @@ contract SlugDexTest is Test {
         address token = _createTokenWithName("FuzzReserves", "FZRe");
 
         vm.prank(alice);
-        dex.buy{value: buyAmount}(token);
+        dex.buy{value: buyAmount}(token, _nextNonce());
 
         uint256 tokenReserves = dex.getTokenReserves(token);
         uint256 vethReserves = dex.getVEthReserves(token);
@@ -1143,14 +1168,14 @@ contract SlugDexTest is Test {
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(ISlugDex.TooSmallTransaction.selector, token, uint256(9999)));
-        dex.buy{value: 9999}(token);
+        dex.buy{value: 9999}(token, _nextNonce());
     }
 
     function test_sell_zeroAmount() public {
         address token = _createTokenWithName("SellZero", "SZ");
 
         vm.prank(alice);
-        dex.buy{value: 1 ether}(token);
+        dex.buy{value: 1 ether}(token, _nextNonce());
 
         vm.startPrank(alice);
         IERC20(token).approve(address(dex), 0);
@@ -1158,7 +1183,7 @@ contract SlugDexTest is Test {
         // VETHSupply - K/(tokenSupply + 0) = VETHSupply - K/tokenSupply
         // After a buy, VETHSupply > initial, but K/tokenSupply also grows, causing underflow
         vm.expectRevert();
-        dex.sell(token, 0);
+        dex.sell(token, 0, _nextNonce());
         vm.stopPrank();
     }
 
@@ -1168,7 +1193,7 @@ contract SlugDexTest is Test {
         // Many small buys
         for (uint i = 0; i < 10; i++) {
             vm.prank(alice);
-            dex.buy{value: 0.1 ether}(token);
+            dex.buy{value: 0.1 ether}(token, _nextNonce());
         }
 
         uint256 aliceTokens = IERC20(token).balanceOf(alice);
@@ -1177,7 +1202,7 @@ contract SlugDexTest is Test {
         // Compare to a single large buy of equivalent amount
         address token2 = _createTokenWithName("SingleBig", "SBg");
         vm.prank(bob);
-        dex.buy{value: 1 ether}(token2);
+        dex.buy{value: 1 ether}(token2, _nextNonce());
 
         uint256 bobTokens = IERC20(token2).balanceOf(bob);
 

@@ -37,7 +37,31 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
      IPositionManager private _positionManager;
      uint24 private constant _POOL_FEE = 1500; // 0.30% fee tier
      int24 private constant _TICK_SPACING = 30; // tick spacing for 0.30% fee
+     mapping(address => uint256)nonce_map;
 
+
+    modifier verifySignature(uint256 nonce, bytes memory _signature)
+    {   
+        require(_signature.length == 65 , "SLUGFEAST: INVALID SIGNATURE LENGTH");
+        bytes32 messageHash = keccak256(abi.encodePacked(msg.sender, nonce));
+        bytes32 signature = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", messageHash));
+        bytes32 r; bytes32 s; uint8 v;
+        assembly {
+            r:= mload(add(_signature, 32))
+            s:= mload(add(_signature, 64))
+            v:=byte(0,mload(add(_signature,96)))
+        }
+        address signer = ecrecover(signature, v,r,s);
+        require(msg.sender == signer, "SLUGFEAST: UNAUTHORIZED ACCESS");
+        _;
+        
+    }
+
+    modifier checkReplay(uint256 nonce){
+        require(nonce_map[msg.sender] != nonce, "SLUGFEAST: FAILED DUE TO REPLAY");
+        nonce_map[msg.sender]++;
+        _;   
+    }
     
 
 
@@ -52,6 +76,11 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
 
     function getSlugFee() public view returns (uint256){
         return slugFee;
+    }
+
+
+    function getNonce() public view returns (uint256){
+        return nonce_map[msg.sender];
     }
 
 
@@ -79,7 +108,7 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
 
 
 
-    function buy (address token) public payable exists(token) notGraduated(token) nonReentrant {
+    function buy (address token, uint256 nonce) external payable exists(token) checkReplay(nonce) notGraduated(token) nonReentrant {
        
         uint256 gotETH = msg.value;
         if(gotETH < 10000) revert TooSmallTransaction(token, gotETH);
@@ -148,7 +177,7 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
 
 
 
-    function sell(address token, uint256 amount) external exists(token) notGraduated(token)  nonReentrant {
+    function sell(address token, uint256 amount, uint256 nonce) external exists(token) notGraduated(token) checkReplay(nonce) nonReentrant {
         
         IERC20 _token = IERC20(token);
         require(_token.allowance(msg.sender, address(this)) >= amount, "SLUGFEAST : FORBIDDEN");
@@ -235,7 +264,7 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
 
 
 
-    function createToken(string memory name, string memory symbol, string memory metadata_uri) external {
+    function createToken(string memory name, string memory symbol, string memory metadata_uri, string memory id ,uint256 nonce, bytes memory signature) checkReplay(nonce) verifySignature(nonce, signature)  external {
         // deploy the custom token with given metadata and mint 1billion tokens to DEX contract, out of which DEX will hold 200 million and 80% tokens will go to the virtual liquidity pool.
         // after this revoke ownership of contract 
 
@@ -252,7 +281,7 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
         }); // 800 million tokens available to be traded
 
         createPool(newTokenAddress);
-        emit TokenCreated(newTokenAddress);
+        emit TokenCreated(newTokenAddress, id);
     }
 
 
@@ -261,7 +290,6 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
         // Graduate the token from the bonding curve to a Uniswap V4 pool.
         // Uses the locked 200M tokens + all accumulated VETH (real ETH) as liquidity.
 
-        supply memory tokenPool = pools[token];
         uint256 accumulatedETH = storedETH[token]; // all real ETH collected from trading
         uint256 lockedTokens = locked_tokens[token]; // 200M tokens reserved for LP
 

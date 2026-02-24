@@ -3,21 +3,19 @@ pragma solidity ^0.8.0;
 
 interface ISlugDex {
 
-    
-
     error TransactionFailure( address token, bool buy, uint256 VETH, uint256 tokens);
     error VETH_Underflow(address token);
     error TooSmallTransaction(address token, uint256 value);
 
     event TokenBought( address indexed token, uint256 VETH, uint256 amount);
     event TokenSold( address indexed token, uint256 VETH, uint256 amount);
-    event TokenCreated( address indexed token);
+    event TokenCreated( address indexed token, string indexed id);
     
     
 
-    function buy(address token) external payable;
+    function buy(address token, uint256 nonce) external payable;
     
-    function sell(address token, uint256 amount) external ;
+    function sell(address token, uint256 amount, uint256 nonce) external ;
 
     function getSlugFee() external view returns (uint256);
 
@@ -28,7 +26,7 @@ interface ISlugDex {
     function getETHQuote(address token) external returns (uint256);
 
 
-    function createToken(string memory name, string memory symbol, string memory metadata_uri) external;
+    function createToken(string memory name, string memory symbol, string memory metadata_uri, string memory id ,uint256 nonce , bytes memory _signature) external;
 
     function getPoolManager() external view returns (address);
 
