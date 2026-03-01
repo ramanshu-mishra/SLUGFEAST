@@ -9,7 +9,7 @@ interface ISlugDex {
 
     event TokenBought( address indexed token, uint256 VETH, uint256 amount);
     event TokenSold( address indexed token, uint256 VETH, uint256 amount);
-    event TokenCreated( address indexed token, string indexed id);
+    event TokenCreated( address indexed token, string id);
     
     
 

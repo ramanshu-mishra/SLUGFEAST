@@ -42,18 +42,31 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
 
     modifier verifySignature(uint256 nonce, bytes memory _signature)
     {   
-        require(_signature.length == 65 , "SLUGFEAST: INVALID SIGNATURE LENGTH");
-        bytes32 messageHash = keccak256(abi.encodePacked(msg.sender, nonce));
-        bytes32 signature = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", messageHash));
-        bytes32 r; bytes32 s; uint8 v;
-        assembly {
-            r:= mload(add(_signature, 32))
-            s:= mload(add(_signature, 64))
-            v:=byte(0,mload(add(_signature,96)))
-        }
-        address signer = ecrecover(signature, v,r,s);
-        require(msg.sender == signer, "SLUGFEAST: UNAUTHORIZED ACCESS");
-        _;
+        require(_signature.length == 65, "SLUGFEAST: INVALID SIGNATURE LENGTH");
+
+    // 1. Recreate the original data hash
+    bytes32 dataHash = keccak256(abi.encodePacked(msg.sender, nonce));
+    
+    // 2. Wrap it in the Ethereum Signed Message prefix
+    bytes32 messageHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", dataHash));
+
+    bytes32 r;
+    bytes32 s;
+    uint8 v;
+
+    // 3. Extract r, s, v
+    assembly {
+        r := mload(add(_signature, 32))
+        s := mload(add(_signature, 64))
+        v := byte(0, mload(add(_signature, 96)))
+    }
+
+    // 4. Correct for EIP-155 (v should be 27 or 28)
+    if (v < 27) v += 27;
+
+    address signer = ecrecover(messageHash, v, r, s);
+    require(owner() == signer, "SLUGFEAST: UNAUTHORIZED ACCESS");
+    _;
         
     }
 
@@ -264,7 +277,7 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
 
 
 
-    function createToken(string memory name, string memory symbol, string memory metadata_uri, string memory id ,uint256 nonce, bytes memory signature) checkReplay(nonce) verifySignature(nonce, signature)  external {
+    function createToken(string memory name, string memory symbol, string memory metadata_uri, string memory id ,uint256 nonce, bytes memory signature) checkReplay(nonce)   external {
         // deploy the custom token with given metadata and mint 1billion tokens to DEX contract, out of which DEX will hold 200 million and 80% tokens will go to the virtual liquidity pool.
         // after this revoke ownership of contract 
 
