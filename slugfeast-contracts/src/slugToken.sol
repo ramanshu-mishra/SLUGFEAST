@@ -17,10 +17,6 @@ contract slugToken is ERC20, Ownable{
     function mint(address addr, uint256 value) public onlyOwner {
         _mint(addr,value);
     }
-
-    function revokeOwnership() public onlyOwner{
-        renounceOwnership();
-    }
     
 
 }
