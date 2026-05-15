@@ -7,9 +7,9 @@ interface ISlugDex {
     error VETH_Underflow(address token);
     error TooSmallTransaction(address token, uint256 value);
 
-    event TokenBought( address indexed token, uint256 VETH, uint256 amount);
-    event TokenSold( address indexed token, uint256 VETH, uint256 amount);
-    event TokenCreated( address indexed token, string id);
+    event TokenBought( address indexed token, uint256 VETH, uint256 amount, address sender, uint256 poolTokens, uint256 poolVETHs);
+    event TokenSold( address indexed token, uint256 VETH, uint256 amount, address sender, uint256 poolTokens, uint256 poolVETHs);
+    event TokenCreated( address indexed token, string id, uint256 poolTokens, uint256 poolVETHs);
     
     
 

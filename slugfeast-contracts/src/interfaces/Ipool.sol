@@ -4,7 +4,7 @@ pragma solidity ^0.8.0;
 
 interface IPool {
 
-    event poolcreated( address indexed tokenA);
+    event poolcreated( address indexed tokenA, uint256 poolTokens, uint256 poolVETHs);
     event tokenGraduated( address indexed token);
     event tokenDeployed(address indexed token);
 

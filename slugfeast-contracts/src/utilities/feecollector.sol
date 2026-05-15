@@ -16,7 +16,7 @@ abstract contract feeCollector is Ownable{
         generatedFee += amount;
     }
 
-    function getCollectedFee() internal view returns(uint256) {
+    function getCollectedFee() onlyOwner() public view returns(uint256) {
         return generatedFee;
     }
 

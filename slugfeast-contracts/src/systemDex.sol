@@ -20,7 +20,7 @@ import "./utilities/feecollector.sol";
 import "./pool.sol";
 import "./slugToken.sol";
 import "./interfaces/IsystemDex.sol";
-import {console} from "lib/forge-std/src/console.sol";
+// import {console} from "lib/forge-std/src/console.sol";
 
 // dex will be used to trade assets using automated market amkers (bounding curve);
 // virtual liquidity will be provided 
@@ -159,8 +159,8 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
             SafeERC20.safeTransfer(_token, msg.sender, tokenSupply);
             
 
-            emit TokenBought(token, requiredETH+fee_special, tokenSupply);
-            // before emiting token Graduated logic I need to call DEX contract to list this token with remaining 20% of tokens and all of the held ETH in tokenPool
+            emit TokenBought(token, requiredETH+fee_special, tokenSupply, msg.sender, pools[token]._tokenSupply, pools[token]._VETH);
+            // before emiting token Graduated logic I need to call DEX contract to list this token with remaining 20% of tokens and all of the held ETH in tokenPool    
         }
         else{
              gotETH -= fee;
@@ -175,7 +175,7 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
            
             SafeERC20.safeTransfer(_token, msg.sender, tokens );
 
-            emit TokenBought(token, gotETH+fee, tokens );
+            emit TokenBought(token, gotETH+fee, tokens, msg.sender, pools[token]._tokenSupply, pools[token]._VETH );
         }
          supply memory pool = pools[token];
 
@@ -214,7 +214,7 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
         (bool success, ) = (msg.sender).call{value : VETH-fee}("");
         if(!success) revert TransactionFailure(token, false, 0, amount);
         
-        emit TokenSold(token, VETH, amount);
+        emit TokenSold(token, VETH, amount, msg.sender, pools[token]._tokenSupply, pools[token]._VETH);
     }
 
 
@@ -281,20 +281,17 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
         // deploy the custom token with given metadata and mint 1billion tokens to DEX contract, out of which DEX will hold 200 million and 80% tokens will go to the virtual liquidity pool.
         // after this revoke ownership of contract 
 
-        
-        
+        signature; // I've put the signature validation logic on hold. will do this after some time. 
+        // Why required: So that people dont flood my_platform with tokens without proper metadata. 
+
         slugToken newToken  = new slugToken(name,symbol,metadata_uri);
         address newTokenAddress = address(newToken);
 
         newToken.mint(address(this), (10**9)*(10**6)); // minted 1 billion tokens
         locked_tokens[newTokenAddress] = 200*(10**6)*(10**6); // locked 200 million tokens
-        pools[newTokenAddress] = supply({
-            _tokenSupply : 800*(10**6)*(10**6),
-            _VETH : 4*(10**18)
-        }); // 800 million tokens available to be traded
 
         createPool(newTokenAddress);
-        emit TokenCreated(newTokenAddress, id);
+        emit TokenCreated(newTokenAddress, id, pools[newTokenAddress]._tokenSupply, pools[newTokenAddress]._VETH);
     }
 
 
@@ -412,7 +409,7 @@ contract SlugDex is  ISlugDex, Pool , feeCollector, ReentrancyGuard{
     }
     // Allow the contract to receive ETH (e.g. swept ETH from PositionManager)
     receive() external payable {}
-
+    
 
     
     

@@ -1,0 +1,524 @@
+%%----------------------------------------------------------------------
+%% cogsci.sty
+%% Style file for the Annual Meeting of the Cognitive Science Society
+%%----------------------------------------------------------------------
+
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{cogsci}[2025/12/01 v2.0 CogSci Conference Style]
+
+%%======================================================================
+%% USAGE
+%%======================================================================
+%%
+%% Basic setup:
+%%
+%%   \documentclass[10pt]{article}
+%%   \usepackage{cogsci}
+%%
+%%----------------------------------------------------------------------
+%% PACKAGE OPTIONS
+%%----------------------------------------------------------------------
+%%
+%% Usage: \usepackage[<options>]{cogsci}
+%%
+%% Typical usage examples:
+%%   For the two-page summary format, use the `twopagesummary` option.
+%%     \usepackage[twopagesummary]{cogsci}
+%%   The full paper format is anonymized by default. Use the `final` option to show the author information.
+%%     \usepackage[final]{cogsci}
+%%   To disable the authblk package and manually format the author information.
+%%     \usepackage[final,customauthors]{cogsci} ... \author{...}
+%%
+%% SUBMISSION TYPE
+%%   type=fullpaper        Full paper submission (default)
+%%   type=twopagesummary   Two-page summary: always shows authors (overrides final=false), omits "Abstract" heading
+%%   twopagesummary        Shorthand for type=twopagesummary
+%%
+%% ANONYMIZATION
+%%   final=false           Anonymous submission for review (default)
+%%   final, final=true     Camera-ready submission with author names
+%%
+%% CONDITIONAL PACKAGE LOADING
+%%
+%%   authblk=true, authblk   Use authblk package (default)
+%%   authblk=false           Disable authblk; use manual \author{} formatting
+%%   customauthors=true, customauthors   Same as authblk=false
+%%   customauthors=false     Same as authblk=true
+%%
+%%   hyperref=true, hyperref   Auto-load hyperref at end of preamble (default)
+%%   hyperref=false, nohyperref   Do not auto-load hyperref
+%%
+%%   Note: Auto-loading requires LaTeX 2020-10-01 or later.
+%%
+%%----------------------------------------------------------------------
+%% USER COMMANDS
+%%----------------------------------------------------------------------
+%%
+%%   \cogscifinalcopy
+%%       Equivalent to final=true. Overrides package option if already set.
+%%       Deprecation planned for future version in favor of package option.
+%%
+%%----------------------------------------------------------------------
+%% AUTHOR/AFFILIATION SYNTAX
+%%----------------------------------------------------------------------
+%%
+%% Default (using authblk package):
+%%
+%%   \author[1]{\mbox{Author N. One (a1@uni.edu)}}
+%%   \author[2]{\mbox{Author Number Two}}
+%%   \affil[1]{Department of Hypothetical Sciences, University of Illustrations}
+%%   \affil[2]{Department of Example Studies, University of Demonstrations}
+%%
+%%   Note: Only the corresponding author should include an email.
+%%
+%% With customauthors option:
+%%
+%%   \author{
+%%     {\large\bfseries Author N. One (a1@uni.edu)$^1$ \& Author Number Two$^2$} \\
+%%     {\normalsize\normalfont
+%%       $^1$Department of Hypothetical Sciences, University of Illustrations \\
+%%       $^2$Department of Example Studies, University of Demonstrations
+%%     }
+%%   }
+%%
+%%======================================================================
+
+%%======================================================================
+%% IMPLEMENTATION
+%%======================================================================
+
+%%----------------------------------------------------------------------
+%% Option processing (LaTeX3)
+%%----------------------------------------------------------------------
+%% Uses kernel key processing (LaTeX >= 2022-06-01) with fallback for
+%% older distributions via l3keys2e.
+
+\ExplSyntaxOn
+
+%% Internal boolean flags
+\bool_new:N \g_cogsci_manualauthorformatting_bool  % true = disable authblk
+\bool_new:N \g_cogsci_customauthors_set_bool       % true = customauthors option was used
+\bool_new:N \g_cogsci_customauthors_value_bool     % value of customauthors option (true/false)
+\bool_new:N \g_cogsci_final_bool                   % true = show authors
+\bool_new:N \g_cogsci_twopagesummary_bool          % true = two-page mode
+\bool_new:N \g_cogsci_hyperref_bool                % true = auto-load hyperref
+\bool_gset_true:N \g_cogsci_hyperref_bool          % default: load hyperref
+
+%% Define package options
+\keys_define:nn { cogsci }
+{
+  %% customauthors: enable manual author formatting (disable authblk)
+  %% Takes precedence over authblk in post-processing
+  customauthors .code:n = { \bool_gset_true:N \g_cogsci_customauthors_set_bool \str_if_eq:nnTF { #1 }
+      { false } { \bool_gset_false:N \g_cogsci_customauthors_value_bool \bool_gset_false:N
+        \g_cogsci_manualauthorformatting_bool } { \bool_gset_true:N \g_cogsci_customauthors_value_bool
+        \bool_gset_true:N \g_cogsci_manualauthorformatting_bool } }, customauthors .default:n = true,
+
+  %% authblk: control authblk package loading (default: true)
+  %% authblk=true → load authblk, authblk=false → skip authblk
+  authblk .code:n = { \str_if_eq:nnTF { #1 } { false } { \bool_gset_true:N
+        \g_cogsci_manualauthorformatting_bool } { \bool_gset_false:N \g_cogsci_manualauthorformatting_bool
+      } }, authblk .default:n = true,
+
+  %% type: submission type (default: fullpaper)
+  %% type=fullpaper → standard full paper submission
+  %% type=twopagesummary → two-page summary (forces deanonymization, omits "Abstract" heading)
+  type .choice:, type / fullpaper .code:n = { \bool_gset_false:N \g_cogsci_twopagesummary_bool },
+  type / twopagesummary .code:n = { \bool_gset_true:N \g_cogsci_twopagesummary_bool }, type
+  .initial:n = fullpaper,
+
+  %% twopagesummary: shorthand for type=twopagesummary
+  twopagesummary .code:n = { \bool_gset_true:N \g_cogsci_twopagesummary_bool }, twopagesummary
+  .value_forbidden:n = true,
+
+  %% final: mark as final (camera-ready) submission (default: false)
+  %% Supports: final, final=true, final=false
+  %% Note: \cogscifinalcopy command can override this setting later in preamble
+  final .bool_gset:N = \g_cogsci_final_bool, final .default:n = true,
+
+  %% hyperref: control automatic hyperref loading (default: true)
+  %% Supports: hyperref, hyperref=true, hyperref=false
+  hyperref .bool_gset:N = \g_cogsci_hyperref_bool, hyperref .default:n = true,
+
+  %% nohyperref: disable automatic hyperref loading (alias for hyperref=false)
+  nohyperref .code:n = { \bool_gset_false:N \g_cogsci_hyperref_bool }, nohyperref .value_forbidden:n
+  = true, } \ExplSyntaxOff
+
+%% Process options (with fallback for older LaTeX)
+\IfFormatAtLeastTF { 2022-06-01 }%
+{ \ProcessKeyOptions [ cogsci ] }%
+{ \RequirePackage { l3keys2e } \ProcessKeysOptions { cogsci } }
+
+%% Post-processing: enforce option precedence regardless of order
+\ExplSyntaxOn
+%% twopagesummary forces final=true
+\bool_if:NT \g_cogsci_twopagesummary_bool
+{ \bool_gset_true:N \g_cogsci_final_bool }
+%% customauthors takes precedence over authblk (if explicitly set)
+\bool_if:NT \g_cogsci_customauthors_set_bool
+{ \bool_gset_eq:NN \g_cogsci_manualauthorformatting_bool \g_cogsci_customauthors_value_bool }
+\ExplSyntaxOff
+
+%%----------------------------------------------------------------------
+%% Required packages
+%%----------------------------------------------------------------------
+
+%% PDF text extraction (complements automatic glyphtounicode in LaTeX 2021+)
+\RequirePackage{cmap}
+
+%% Font encoding: 8-bit fonts for proper hyphenation and text extraction
+\RequirePackage[T1]{fontenc}
+
+%% Language support
+\RequirePackage[american]{babel}
+
+%% Context-sensitive quotation marks (recommended by biblatex)
+\RequirePackage[style=american]{csquotes}
+
+%% Times-compatible text and math fonts
+\RequirePackage{newtxtext}
+\RequirePackage{newtxmath}
+
+%% Pre-configure biblatex for APA style
+\PassOptionsToPackage{style=apa}{biblatex}
+
+%% Pre-configure hyperref options (applied whether auto-loaded or manually loaded)
+\PassOptionsToPackage{hidelinks}{hyperref}
+
+%%----------------------------------------------------------------------
+%% Package option pass-through
+%%----------------------------------------------------------------------
+%% Pre-configure optional packages that users may load.
+%% Disables protrusion to prevent characters from exceeding margin boundaries.
+
+\PassOptionsToPackage{protrusion=false}{microtype}
+
+%%----------------------------------------------------------------------
+%% User commands: submission mode
+%%----------------------------------------------------------------------
+
+\ExplSyntaxOn
+%% \cogscifinalcopy directive
+\NewDocumentCommand { \cogscifinalcopy } { }
+{ \bool_gset_true:N \g_cogsci_final_bool }
+\ExplSyntaxOff
+
+%%----------------------------------------------------------------------
+%% Internal: author display logic
+%%----------------------------------------------------------------------
+%% Display authors if final=true, otherwise show anonymous placeholder.
+%% Note: twopagesummary sets final=true during post-processing.
+
+\ExplSyntaxOn
+\cs_new_protected:Npn \__cogsci_show_author_or_anon:
+{
+  \bool_if:NTF \g_cogsci_final_bool
+  { \@author }
+  { { \large \bfseries Anonymous~ CogSci~ submission } }
+}
+%% Wrapper for use in \@maketitle (outside expl3 syntax)
+\cs_new_eq:NN \cogsci@showauthor \__cogsci_show_author_or_anon:
+\ExplSyntaxOff
+
+%%----------------------------------------------------------------------
+%% Author/affiliation formatting (authblk)
+%%----------------------------------------------------------------------
+%% Loads authblk package unless customauthors option is set.
+
+\ExplSyntaxOn
+\bool_if:NF \g_cogsci_manualauthorformatting_bool
+{
+  \RequirePackage{authblk}
+  \renewcommand\Authfont{\large\bfseries}           % 11pt bold for author names
+  \renewcommand\Affilfont{\normalsize\normalfont}   % 10pt normal for affiliations
+  \renewcommand\Authsep{,~}                         % comma separator between authors
+  \renewcommand\Authand{~\&~}                       % ampersand between two authors
+  \renewcommand\Authands{~\&~}                      % ampersand before last author (no comma)
+  \setlength{\affilsep}{0pt}                        % no extra vertical space between authors and affiliations
+}
+\ExplSyntaxOff
+
+%%----------------------------------------------------------------------
+%% Page layout
+%%----------------------------------------------------------------------
+%% Margins: 0.75in left, 1in top
+%% Text area: 7in x 9.25in
+
+\setlength\oddsidemargin{-0.25in}
+
+% BOTTOM MARGIN / DESCENDER HANDLING
+% -----------------------------------
+% Problem: The last line's descenders (g, y, p, q, subscripts) extend below its
+% baseline. Without compensation, descenders would exceed the 9.25in text area.
+%
+% Solution: Reserve space for descenders via \maxdepth, then subtract from textheight.
+%   - \maxdepth: Maximum depth LaTeX allows for the last line on a page.
+%     Standard LaTeX sets this to 0.5\topskip, but since we set topskip≈0 (see below),
+%     we must set it explicitly.
+%   - 5pt accommodates: 10pt body (~3pt), 12pt headings (~3.6pt), 9pt footnotes (~2.7pt),
+%     plus buffer for subscripts and math.
+%   - textheight is reduced by maxdepth so total ink (baseline + descenders) fits in 9.25in.
+\setlength\maxdepth{3pt}
+\setlength\textheight{9.25in}
+\addtolength\textheight{-\maxdepth}
+
+\setlength\textwidth{7in}
+
+\setlength\columnsep{0.25in}
+
+\setlength\headheight{0pt}
+\setlength\headsep{0pt}
+
+\setlength\topmargin{0in}
+
+% TOP MARGIN / FIRST LINE POSITIONING
+% ------------------------------------
+% Problem: By default, LaTeX's \topskip (10pt) pushes the first baseline down from
+% the top of the text area. This caused text to start ~3pt too low (measured at
+% 1.044in instead of 1.00in from page top).
+%
+% Solution: Set \topskip to effectively zero, so the first baseline aligns with
+% the top of the text area.
+%   - Using 0.01pt instead of exactly 0pt to avoid a known LaTeX output routine bug.
+%     (Leslie Lamport's bug list: "Setting \topskip to 0pt does weird things.")
+%   - This positions the first line's baseline at the text area top; ascenders
+%     extend upward from there into the top margin space.
+\setlength\topskip{0.01pt}
+
+\setlength\footskip{0pt}
+%\setlength\footheight{0pt}
+
+\thispagestyle{empty}
+\pagestyle{empty}
+\flushbottom
+\twocolumn
+\sloppy
+
+%% Set the starting page
+\newcommand{\startpage}[1]{\setcounter{page}{#1}}
+
+%% Disable table of contents (not used in conference papers)
+\def\addcontentsline#1#2#3{}
+
+%%----------------------------------------------------------------------
+%% Title block
+%%----------------------------------------------------------------------
+%% Minimum height 1.75in from top margin to body text.
+%% Body text starts at least 2.75in from top of page (1in margin + 1.75in titlebox).
+%% Titlebox grows to fit content; always maintains 24pt buffer before body.
+
+\newlength\titlebox
+\setlength\titlebox{1.75in}
+
+% Title
+\def\maketitle{\par
+  \begingroup
+  \twocolumn[\@maketitle] \@thanks
+  \endgroup
+  \let\maketitle\relax \let\@maketitle\relax
+  \gdef\@thanks{}\gdef\@author{}\gdef\@title{}\let\thanks\relax}
+
+% Titlebox
+\def\@maketitle{%
+  \setbox\@tempboxa=\vbox{%
+    \linewidth\hsize
+    \centering
+    {\LARGE\bfseries \@title \par}%
+    \vskip 1em%
+    \cogsci@showauthor
+    \vskip 24pt\relax% minimum 24pt buffer before body text
+  }%
+  \ifdim\ht\@tempboxa<\titlebox
+    \vbox to\titlebox{\unvbox\@tempboxa\vfill}%
+  \else
+    \box\@tempboxa
+  \fi
+}
+
+%%----------------------------------------------------------------------
+%% Abstract environment
+%%----------------------------------------------------------------------
+%% Full paper: "Abstract" heading (10pt bold centered) + body (9pt, 1/8in margins)
+%% Two-page summary: No heading, just body with margins
+
+\ExplSyntaxOn
+\renewenvironment{abstract}
+{
+  \bool_if:NF \g_cogsci_twopagesummary_bool
+  {
+    \centerline{\normalsize\bfseries Abstract}
+    \vskip 1em
+  }
+  \begin{list}{}{%
+      \setlength{\leftmargin}{0.125in}%
+      \setlength{\rightmargin}{0.125in}%
+      \setlength{\topsep}{0pt}%
+      \setlength{\partopsep}{0pt}%
+      \setlength{\itemsep}{0pt}%
+      \setlength{\parsep}{10pt}% one blank line (matches 9/10 baselineskip)
+    }\item\relax
+          \small
+          }
+          {\par
+  \end{list}
+}
+\ExplSyntaxOff
+
+%%----------------------------------------------------------------------
+%% Section headings
+%%----------------------------------------------------------------------
+%% @startsection parameters:
+%%   beforeskip: negative = suppress indent on first para; |value| = space above
+%%   afterskip:  positive = space below; negative = run-in heading
+%%
+%% NOTE: When beforeskip is negative, plus/minus glue is also negated, so use negative values
+%%
+%% NB: Actual rendered space is NOT just the skip value.
+%% Font size transitions add extra space based on baselineskip differences.
+%%
+%% BEFORESKIP (body -> heading, switching to larger font):
+%%   actual_space = beforeskip + (heading_baselineskip - body_font_size)
+%%   To achieve 12pt above: beforeskip = 12pt - heading_baselineskip + 10pt
+%%
+%%   Level 1 (\Large):      12pt font, 15pt baselineskip => 12 - 15 + 10 = 7pt
+%%   Level 2 (\large):      11pt font, 13pt baselineskip => 12 - 13 + 10 = 9pt
+%%   Level 3 (\normalsize): 10pt font, 12pt baselineskip => 12 - 12 + 10 = 10pt
+%%
+%% AFTERSKIP (heading -> body, switching to smaller font):
+%%   actual_space = afterskip + (body_baselineskip - heading_font_size)
+%%   To achieve 3pt below: afterskip = 3pt - body_baselineskip + heading_font_size
+%%
+%%   Level 1 (\Large):  12pt font => 3 - 12 + 12 = 3pt
+%%   Level 2 (\large):  11pt font => 3 - 12 + 11 = 2pt
+%%   Level 3: uses negative afterskip for run-in style
+\def\section{\@startsection{section}{1}{\z@}%
+  {-7pt plus -3pt minus -0pt}%    % 12pt above: 12 - (15 - 10) = 7pt
+  {3pt plus 2pt minus 0pt}%       % 3pt below:  3 - (12 - 12) = 3pt
+  {\Large\bfseries\centering}}
+
+\def\subsection{\@startsection{subsection}{2}{\z@}%
+  {-9pt plus -3pt minus -0pt}%    % 12pt above: 12 - (13 - 10) = 9pt
+  {2pt plus 2pt minus 0pt}%       % 3pt below:  3 - (12 - 11) = 2pt
+  {\large\bfseries\raggedright}}
+
+\def\subsubsection{\@startsection{subparagraph}{3}{\z@}%
+  {-9pt plus -3pt minus -0pt}%    % 12pt above: 12 - (12 - 10) = 10pt; however, for some reason, 9pt empirically fits better than 10pt
+  {-1em}%                         % run-in heading (negative = inline with following text)
+  {\normalsize\bfseries}}
+
+\setcounter{secnumdepth}{0}
+
+%%----------------------------------------------------------------------
+%% Footnotes
+%%----------------------------------------------------------------------
+
+\footnotesep=6.65pt
+\skip\footins=9pt plus 4pt minus 2pt
+\def\footnoterule{\kern-3pt \hrule width 5pc \kern 2.6pt}
+\setcounter{footnote}{0}
+
+%%----------------------------------------------------------------------
+%% Lists and paragraphs
+%%----------------------------------------------------------------------
+
+\parindent=0.125in
+\topsep=4pt plus 1pt minus 2pt
+\partopsep=1pt plus 0.5pt minus 0.5pt
+\itemsep=1pt plus 1pt minus 0.5pt
+\parsep=1pt plus 1pt minus 0.5pt
+
+\leftmargin=10pt
+\leftmargini=\leftmargin
+\leftmarginii=10pt
+\leftmarginiii=5pt
+\leftmarginiv=5pt
+\leftmarginv=5pt
+\leftmarginvi=5pt
+\labelsep=5pt
+\labelwidth=\leftmargini
+\advance\labelwidth by -\labelsep
+
+\def\@listi{\leftmargin=\leftmargini}
+\def\@listii{%
+  \leftmargin=\leftmarginii
+  \labelwidth=\leftmarginii
+  \advance\labelwidth by -\labelsep
+  \topsep=2pt plus 1pt minus 0.5pt
+  \parsep=1pt plus 0.5pt minus 0.5pt
+  \itemsep=\parsep}
+\def\@listiii{%
+  \leftmargin=\leftmarginiii
+  \labelwidth=\leftmarginiii
+  \advance\labelwidth by -\labelsep
+  \topsep=1pt plus 0.5pt minus 0.5pt
+  \parsep=\z@
+  \partopsep=0.5pt plus 0pt minus 0.5pt
+  \itemsep=\topsep}
+\def\@listiv{%
+  \leftmargin=\leftmarginiv
+  \labelwidth=\leftmarginiv
+  \advance\labelwidth by -\labelsep}
+\def\@listv{%
+  \leftmargin=\leftmarginv
+  \labelwidth=\leftmarginv
+  \advance\labelwidth by -\labelsep}
+\def\@listvi{%
+  \leftmargin=\leftmarginvi
+  \labelwidth=\leftmarginvi
+  \advance\labelwidth by -\labelsep}
+
+%%----------------------------------------------------------------------
+%% Display math spacing
+%%----------------------------------------------------------------------
+
+\abovedisplayskip=7pt plus 2pt minus 5pt
+\belowdisplayskip=\abovedisplayskip
+\abovedisplayshortskip=0pt plus 3pt
+\belowdisplayshortskip=4pt plus 3pt minus 3pt
+
+%%----------------------------------------------------------------------
+%% Font sizes
+%%----------------------------------------------------------------------
+%% Body text: 10pt with 12pt baselineskip
+%% Font size definitions (updated from LaTeX 2.09 \@setsize to LaTeX2e \@setfontsize)
+%% \@setfontsize takes 3 args: command name, font size, baselineskip
+
+\renewcommand\normalsize{\@setfontsize\normalsize{10}{12}}
+\renewcommand\small{\@setfontsize\small{9}{10}}
+\renewcommand\footnotesize{\@setfontsize\footnotesize{9}{10}}
+\renewcommand\scriptsize{\@setfontsize\scriptsize{7}{8}}
+\renewcommand\tiny{\@setfontsize\tiny{6}{7}}
+\renewcommand\large{\@setfontsize\large{11}{13}}
+\renewcommand\Large{\@setfontsize\Large{12}{15}}
+\renewcommand\LARGE{\@setfontsize\LARGE{14}{17}}
+\renewcommand\huge{\@setfontsize\huge{17}{20}}
+\renewcommand\Huge{\@setfontsize\Huge{20}{23}}
+\normalsize
+
+%%----------------------------------------------------------------------
+%% Hyperref auto-loading
+%%----------------------------------------------------------------------
+%% Automatically load hyperref at end of preamble (begindocument/before hook).
+%% This follows hyperref documentation: "If you want to delay the loading,
+%% use the begindocument/before hook." Do NOT use begindocument or \AtBeginDocument.
+%%
+%% Requires LaTeX 2020-10-01 or later for hook support.
+%% On older LaTeX versions, hyperref is not auto-loaded; users must load it manually.
+
+\ExplSyntaxOn
+\IfFormatAtLeastTF { 2020-10-01 }
+{
+  \bool_if:NT \g_cogsci_hyperref_bool
+  {
+    \AddToHook { begindocument/before }
+    {
+      \@ifpackageloaded { hyperref } { } { \RequirePackage { hyperref } }
+    }
+  }
+}
+{ } % No fallback: hyperref not auto-loaded on older LaTeX
+\ExplSyntaxOff
+
+%%----------------------------------------------------------------------
+%% End of cogsci.sty
+%%----------------------------------------------------------------------

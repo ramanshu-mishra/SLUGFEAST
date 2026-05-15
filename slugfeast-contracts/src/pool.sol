@@ -17,14 +17,14 @@ abstract contract Pool is IPool, Ownable{
     // tokensupply to VETH supply mapping
     // initially 1 billion token against 4 VETH
 
-    mapping(address => supply) pools;
-    mapping(address=>uint256) storedETH;
-    mapping(address => uint256)locked_tokens;
-    mapping(address=>bool)graduated;
+    mapping(address => supply) pools; // tokens and their pool of VETH and token supply currently stored in the contract
+    mapping(address=>uint256) storedETH; // actual ETH stored by each token
+    mapping(address => uint256)locked_tokens; // locked 200 million tokens of each token contract
+    mapping(address=>bool)graduated; //which tokens are graduated
    
     
     modifier notexists(address token) {
-        require(pools[token]._tokenSupply != 0 && pools[token]._VETH != 0, "SLUGFEAST : FORBIDDEN");
+        require(pools[token]._tokenSupply == 0 && pools[token]._VETH == 0, "SLUGFEAST : FORBIDDEN");
         _;
     }
 
@@ -41,7 +41,8 @@ abstract contract Pool is IPool, Ownable{
 
     constructor() Ownable(msg.sender){}
 
-    function createPool(address token) internal notexists(token){
+    function createPool(address token) internal notexists(token)
+    {
         uint256 tokenSupply = getInitialTokenSupply();
         uint256 VETHSupply = getInitialVEthSupply();
         pools[token] =  supply({
@@ -49,7 +50,7 @@ abstract contract Pool is IPool, Ownable{
             _VETH : VETHSupply
         });
         
-        emit poolcreated(token);
+        emit poolcreated(token, pools[token]._tokenSupply, pools[token]._VETH);
     }
 
 
@@ -89,8 +90,7 @@ abstract contract Pool is IPool, Ownable{
 
     function getPoolSupply(address token) external view exists(token) returns (supply memory){
         return pools[token]; 
-    }
-
+    }    
 }
 
 

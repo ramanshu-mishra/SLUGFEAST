@@ -1,0 +1,92 @@
+%%% Slugfeast article draft for CogSci-style proceedings
+
+\documentclass[10pt,letterpaper]{article}
+
+\usepackage{cogsci}
+\usepackage[
+  style=apa,
+  natbib=true,
+  annotation=false,
+]{biblatex}
+\addbibresource{cogsci_bibliography_template.bib}
+\setlength{\bibhang}{.125in}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+
+\title{Slugfeast: A Memecoin Trading Platform for Monad-Targeted Launch, Trading, and Graduation Flows}
+
+\author{Anonymous CogSci submission}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Slugfeast is a memecoin trading platform whose current codebase combines a bonding-curve token factory, a trading contract, a lightweight web client, and supporting indexing and real-time services. This draft synthesizes the repository evidence into a technical article that explains launch mechanics, token liquidity, contract-level controls, and the current end-to-end user flow. The present implementation uses a virtual-liquidity curve for pre-graduation trading and then migrates liquidity into a Uniswap v4 pool when the token supply is depleted. Security controls include ownership-gated fee updates, replay protection, non-reentrancy on trading paths, allowance checks for sells, and a graduation step that locks reserve tokens into the post-curve liquidity position. The web client already reads reserves, submits signed create-token requests, and waits for on-chain receipts, but algorithmic price prediction is not yet implemented as a distinct model in the examined code. The article therefore treats price prediction as a future work item and preserves only claims supported by repository evidence.
+\end{abstract}
+
+\section{Article}
+Slugfeast is organized around a direct on-chain trading path, a client that sequences creation and trading transactions, and a contract that separates pre-graduation bonding-curve activity from post-graduation liquidity provisioning. The repository snapshot shows a platform built from a Foundry-based Solidity system, a Turborepo web application, and several service layers that keep token discovery, trade state, and media uploads synchronized. The implementation currently targets EVM tooling and Uniswap v4 primitives \citep{FoundryDocs, UniswapV4Docs}, while the user-facing project intent is to deploy on Monad.
+
+\section{Introduction}
+Slugfeast presents itself as a memecoin trading platform where users create tokens, trade against a bonding curve, and eventually graduate successful tokens into a more standard AMM pool. The core contract, \texttt{SlugDex}, stores a per-token virtual reserve state, calculates price movement from a constant-product curve, and issues tokens against an initial supply of 800 million units paired with 4 virtual ETH. The client side exposes token creation, buy, sell, reserve display, and live updates through a Next.js application with wallet connectivity and chain-aware transaction helpers.
+
+This draft keeps a narrow scope. It describes what the repository actually implements, not what a complete production deployment might eventually include. In particular, the current snapshot already supports launch, buy, sell, and graduation logic, but it does not provide a separate production-grade price-prediction engine, and the create-token path still contains an explicit TODO around signature validation in the Solidity source.
+
+\section{Core Concepts \& Methodologies}
+
+\subsection{Automated Bonding Curves: How Slugfeast manages token liquidity and fair launches}
+The pre-graduation market is built on a virtual-liquidity bonding curve. In \texttt{pool.sol}, every token begins with \(800{,}000{,}000 \times 10^6\) tradeable tokens and \(4\) virtual ETH, and the contract uses the invariant \(k = x \cdot y\) to derive quotes and trade outputs. The trading functions in \texttt{systemDex.sol} compute token output from ETH input and ETH output from token input by updating the virtual reserves rather than by directly depending on an external market maker.
+
+This design serves two purposes. First, it gives the platform deterministic on-chain price movement that can be reasoned about from contract state alone. Second, it supports a fair-launch style distribution because buyers draw from a finite reserve rather than from a privileged treasury. When a buy drains the reserve to zero, the contract calls \texttt{graduateToken}, moves the market into a Uniswap v4 position, and marks the token as graduated. The graduation step uses the locked 200 million tokens and accumulated real ETH to seed the external liquidity position, which makes the curve exit explicit rather than implicit \citep{UniswapV4Docs}.
+
+The web client mirrors that state. The bonding-curve component calculates a percentage from contract reserves, then subscribes to real-time token updates so the UI can show progress as the reserve depletes. The important methodological point is that the UI is not inventing liquidity state; it is reflecting the on-chain reserve arithmetic and the indexed update stream.
+
+\subsection*{Evidence Index for Security Controls}
+The repository evidence for security-related claims is concentrated in a small set of files.
+\begin{itemize}[leftmargin=1.25em]
+  \item \texttt{slugfeast-contracts/src/systemDex.sol}: replay protection, signature verification scaffold, non-reentrant trading functions, owner-gated fee mutation, allowance checks for sell, graduation gating, and explicit transaction-failure reverts.
+  \item \texttt{slugfeast-contracts/src/pool.sol}: existence checks, graduation flags, locked-token tracking, and the constant-product reserve model.
+  \item \texttt{slugfeast-contracts/src/utilities/feecollector.sol}: fee accounting and owner-only withdrawal.
+  \item \texttt{slugfeast-contracts/test/SlugDex.t.sol}: test coverage for owner control, fee behavior, token creation, buy paths, and reserve updates.
+  \item \texttt{slugfeast-web/apps/client/hooks/useCreateTokenOnChain.tsx}: nonce-aware create-token submission and receipt waiting.
+  \item \texttt{slugfeast-web/apps/client/hooks/useBuyTokens.tsx} and \texttt{useSellTokens.tsx}: wallet-signed trades, approval-before-sell, and receipt confirmation.
+\end{itemize}
+
+\subsection{Smart Contract Security: Safeguarding users against rug pulls and exploits}
+The contract contains several concrete controls, but they are unevenly mature. The strongest implemented protections are procedural rather than cryptographic. Buy and sell functions are protected by \texttt{nonReentrant}, reducing the risk of nested callback abuse. Both trade paths require the token to exist and remain ungraduated, which prevents post-graduation use of the bonding-curve state. The sell path requires an ERC-20 allowance before tokens can be transferred back into the contract, which creates a standard user-consent boundary. Fee updates are owner-only, and fee withdrawals are owner-only, so fee policy is centralized in the deployer \citep{OpenZeppelinContracts}.
+
+Replay protection is also present through a nonce map. Both trading and token-creation flows increment or check a per-sender nonce, and the front-end hooks compensate by sending \(nonce + 1\) when submitting transactions. That reduces simple replay risk across the client-contract interaction. The code also defines a signature-verification modifier that reconstructs an Ethereum-signed message over \(msg.sender\) and a nonce, although the token-creation function currently leaves the signature validation logic on hold. That is a substantive gap: the code advertises authorization controls for token creation, but the main create-token entry point does not yet enforce them.
+
+The graduation path has both protective and risk-bearing aspects. It locks 200 million tokens for the post-curve liquidity position and uses stored ETH accumulated from trading to seed the external AMM. That mechanism reduces the chance that launch liquidity is silently diverted elsewhere. However, the contract still depends on correct external Uniswap v4 initialization and on accurate reserve accounting at the graduation boundary \citep{UniswapV4Docs}. The current draft should therefore treat graduation as a controlled handoff, not as proof of full economic safety.
+
+The most important residual risk is that the platform does not yet provide a complete anti-sybil or anti-abuse admission system for token creation. The code comments explicitly note that signature validation is deferred, which means the launch surface still accepts a broad class of creator submissions. That makes the evidence index above especially relevant: the safeguards that do exist are clear, but the missing ones should be called out directly rather than glossed over.
+
+\subsection{Algorithmic Price Prediction: Projecting market movements on the platform}
+The examined repository does not yet implement a dedicated predictive model for token prices. What it does implement is a deterministic bonding curve, a reserve-based progress display, and real-time subscription plumbing. In practice, that means the platform can report current curve state and derive simple forward-looking heuristics from reserve depletion, but it cannot yet claim a learned or statistically validated prediction engine.
+
+The best evidence for this conclusion is what the code chooses to expose. The client computes bonding-curve progress from token reserves, subscribes to real-time updates, and presents reserve movement as a percentage. That is useful for trader awareness, but it is still state visualization rather than forecasting. A future predictive layer would need a model, training data, evaluation metrics, and a clear separation from the live reserve oracle. Until that exists, this section should remain explicit about the difference between derived state and prediction.
+
+\section{System Implementation}
+The implementation is split across contract, client, and service layers. On-chain, \texttt{SlugDex} owns the primary state machine. It accepts a constructor-defined fee rate, keeps virtual reserves in \texttt{pools}, tracks stored ETH separately, and updates a graduation flag when supply is exhausted. The token factory path deploys a new \texttt{slugToken}, mints the token supply to the DEX contract, creates the virtual pool, and emits a creation event. The trade path updates reserves, collects fees, transfers tokens or ETH, and emits structured events that downstream indexers can consume.
+
+The client application sequences those operations. The create page first uploads media to a server endpoint, then fetches a nonce, then asks a backend routine to prepare token metadata and signature material, and finally submits \texttt{createToken} on chain. The buy hook sends ETH and waits for the receipt. The sell hook first issues an ERC-20 approval and then submits \texttt{sell}, again waiting for a mined receipt. The bonding-curve component uses the read-only reserve hook to render progress and receives push-style updates from a real-time manager.
+
+The network and deployment configuration currently exposes an implementation detail worth noting in the article. The wallet configuration in the client still points to Sepolia rather than Monad, so the repo should be described as Monad-targeted rather than Monad-finalized. That is not a conceptual flaw; it is a state-of-repository fact. A production Monad migration will need network constants, contract addresses, and indexer configuration to be aligned before the paper can claim live deployment on the target chain.
+
+\section{Future Plans}
+Three future items stand out from the codebase.
+
+First, the signature validation path for token creation should be completed and tested, because the current code leaves it intentionally inactive even though the modifier exists. Second, the platform should decide how to represent predictive analytics if it wants to keep the algorithmic price-prediction heading in the paper; at present, the evidence supports only reserve-derived visualization. Third, the deployment path should be aligned with Monad rather than the current Sepolia client configuration, including chain IDs, contract addresses, and any indexer or RPC endpoints.
+
+There is also an economic follow-up item. The graduation mechanism is sound as a concept, but it should be audited for slippage bounds, external pool initialization failure handling, and reserve-accounting edge cases. The code already contains tests for trade behavior and constructor invariants, but graduation-specific coverage should be expanded so the paper can cite stronger evidence.
+
+\section{References}
+This draft uses repository evidence alongside standard implementation references for the Solidity and front-end stack. The bibliography currently includes Foundry, OpenZeppelin, Ethereum signed data, Uniswap v4, and wagmi client documentation \citep{FoundryDocs, OpenZeppelinContracts, EIP191, UniswapV4Docs, WagmiDocs}.
+
+\printbibliography[heading=none]
+
+\section{Conclusion}
+Slugfeast already has the core shape of a launch-and-trade platform: deterministic pre-graduation pricing, explicit graduation into a pooled market, wallet-backed client transactions, and live reserve visualization. The strongest claims that can be made today are about how the system is structured and what controls are already present. The strongest claims that cannot yet be made are exactly the ones that depend on unfinished code paths: enforced creator authorization, a genuine predictive layer, and a Monad-deployed runtime environment. The draft should therefore remain precise about what the repository proves and careful about what it only intends to prove.
+\end{document}

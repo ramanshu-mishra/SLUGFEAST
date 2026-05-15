@@ -18,5 +18,4 @@ contract slugToken is ERC20, Ownable{
         _mint(addr,value);
     }
     
-
 }
