@@ -14,7 +14,7 @@ contract DeployDex is Script {
 
        
         new SlugDex(dexFee, _poolManager, _positionManager); 
-
+        
         vm.stopBroadcast();
     }
 }
